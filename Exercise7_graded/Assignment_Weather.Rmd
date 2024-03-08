@@ -1,0 +1,213 @@
+---
+title: "Assignment7 Weather"
+author: "Yunhong Feng"
+date: '2024-02-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("leaflet.extras")
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(readr)
+library(sf)
+library(maps)
+library(tigris)
+library(leaflet)
+library(RColorBrewer)
+library(leaflet.extras) 
+```
+
+```{r}
+data<-read.csv("storms.csv")
+```
+
+Task 1a) State Choropleth Maps
+```{r}
+# Get total damage 
+data <- data %>%
+  mutate(TOTAL_DAMAGE = DAMAGE_PROPERTY_USD + DAMAGE_CROPS_USD)
+
+# Standardize the format of STATE_FIPS for both data 
+damage_data_state <- data %>%
+  group_by(STATE_FIPS) %>%
+  summarise(TOTAL_DAMAGE = sum(TOTAL_DAMAGE, na.rm = TRUE)) 
+damage_data_state <- damage_data_state %>% mutate(STATE_FIPS = sprintf("%02d", as.numeric(STATE_FIPS)))
+
+# Get state level data and join with the weather data
+# Since the number of TOTAL_DAMAGE is too large, I log it to make the scale more readable
+states <- states(cb = TRUE, year = 2020, class = "sf")
+map_data1a <- left_join(states, damage_data_state, by = c("GEOID" = "STATE_FIPS")) %>% 
+  filter(!is.na(TOTAL_DAMAGE))
+map_data1a$LOG_TOTAL_DAMAGE <- log(map_data1a$TOTAL_DAMAGE)
+
+# Plot the map
+ggplot(map_data1a) +
+  geom_sf(aes(fill = LOG_TOTAL_DAMAGE), color = "white") +
+  scale_fill_viridis_c(
+    name = "Total Damage (log10)") +
+  labs(title = "Total Damage from Storms by State",
+    subtitle = "United States",
+    caption = "Source: Storm Data")+
+  geom_sf_text(aes(label = STUSPS), color = "black", size = 3, check_overlap = TRUE) +  # State code
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  coord_sf(xlim = c(-125, -66), ylim = c(24, 49), expand = FALSE) # Center and Zoom in US
+```
+
+Task 1b) County Choropleth Maps
+```{r}
+# Repeat the process to create county level map
+
+damage_data_county <- data %>%
+  group_by(CZ_FIPS) %>%
+  summarise(TOTAL_DAMAGE = sum(TOTAL_DAMAGE, na.rm = TRUE)) 
+damage_data_county <- damage_data_county %>% mutate(CZ_FIPS = sprintf("%03d", as.numeric(CZ_FIPS)))
+
+counties <- counties(cb = TRUE, year = 2020, class = "sf")
+map_data1b <- left_join(counties, damage_data_county, by = c("COUNTYFP" = "CZ_FIPS")) %>%
+  filter(!is.na(TOTAL_DAMAGE))
+map_data1b$LOG_TOTAL_DAMAGE <- log(map_data1b$TOTAL_DAMAGE) 
+
+ggplot(map_data1b) +
+  geom_sf(aes(fill = LOG_TOTAL_DAMAGE), color = "white") +
+  scale_fill_viridis_c(name = "Total Damage (log10)") +
+  labs(title = "Total Damage from Storms by County",
+       subtitle = "United States",
+       caption = "Source: Storm Data") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  coord_sf(xlim = c(-125, -66), ylim = c(24, 49), expand = FALSE)
+```
+
+Task 1c) Density Map
+```{r}
+# Data cleaning 
+Injuries_data <- data  %>%
+  filter(!is.na(BEGIN_LAT) & !is.na(BEGIN_LON))%>%
+  group_by(BEGIN_LAT, BEGIN_LON) %>%
+  summarise(Total_Injuries = sum(INJURIES_DIRECT + INJURIES_INDIRECT, na.rm = TRUE)) %>%
+  ungroup() %>% filter(Total_Injuries > 0) # Only focus on the events that causes injury, make the graph more useful
+
+# Get US map
+storm_points <- st_as_sf(Injuries_data, coords = c("BEGIN_LON", "BEGIN_LAT"), crs = 4326)
+us_map <- st_as_sf(maps::map("usa", plot = FALSE, fill = TRUE), crs = 4326)
+
+# Plot the dots that shows the density on the US map
+ggplot()+
+  geom_sf(data = states, fill = "lightgrey", color = "black", size = 0.25)  +
+  geom_sf(data = storm_points, aes(size = Total_Injuries, color = Total_Injuries), alpha = 0.5) +
+  scale_color_viridis(option = "C", direction = -1) +  # Use viridis for a nice color scale
+  theme_minimal() +
+  labs(title = "Density of Severe Weather Events by Injuries",
+       subtitle = "United States",
+       color = "Injuries",
+       size = "Injuries",
+    caption = "Source: Storm Data") +
+  theme(legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -65), ylim = c(25, 50)) # Center and Zoom in US
+```
+Both the Choropleth Maps and the Density Map have pros and cons in their visualization. The County Choropleth Map excellently visualizes how the economic impacts of storms distribute across larger geographic areas, highlighting regions that are more financially affected. Whereas the density map can more precisely indicate the exact locations of severe weather events, providing a clear picture of where the deadliest storms occur. From my perspective the point-based map may be more effective due to its direct representation of fatalities, offering a stark visualization of the human cost of storms.
+
+Task 2a) Interactive Map of Severe Weather Events
+```{r}
+# Select useful data info
+leaflet_data<- data %>%
+  mutate(Total_Deaths = DEATHS_DIRECT + DEATHS_INDIRECT,
+         Total_Injuries = INJURIES_DIRECT + INJURIES_INDIRECT) %>%
+  filter(Total_Deaths > 0) %>%
+  select(BEGIN_LAT, BEGIN_LON, BEGIN_DATE_TIME, END_DATE_TIME, EPISODE_ID, EVENT_ID, Total_Deaths, Total_Injuries, EVENT_TYPE)
+
+# Plot the graph with popup
+leaflet(data = leaflet_data)  %>%  
+  addMarkers(lng = ~BEGIN_LON, lat = ~BEGIN_LAT, popup = ~paste(
+    "Begin Date: ", BEGIN_DATE_TIME,
+    "<br>End Date: ", END_DATE_TIME,
+    "<br>Episode ID: ", EPISODE_ID,
+    "<br>Event ID: ", EVENT_ID,
+    "<br>Event Type: ", EVENT_TYPE,
+    "<br>Total Deaths: ", Total_Deaths,
+    "<br>Total Injuries: ", Total_Injuries)) %>%
+  addTiles(urlTemplate = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png") %>%
+  setView(lng = -98.5795, lat = 39.8283, zoom = 4)  # Center the map over the US
+```
+
+Task 2b) Color by Type of Weather Event
+```{r}
+# Determine what are the types of event in the data 
+table(leaflet_data$EVENT_TYPE)
+
+# Re - categorize the data into simpler form 
+leaflet_data <- leaflet_data %>%
+  mutate(EVENT_TYPE2 = case_when(
+    EVENT_TYPE %in% c("Heat", "Cold/Wind Chill", "Excessive Heat", "Extreme Cold/Wind Chill", "Frost/Freeze") ~ "Extreme Temperature",
+    EVENT_TYPE %in% c("Flash Flood", "Flood", "Coastal Flood", "Lakeshore Flood", "Storm Surge/Tide") ~ "Flood",
+    EVENT_TYPE %in% c("High Wind", "Hurricane", "Tropical Storm", "Marine Strong Wind", "Strong Wind", "Thunderstorm Wind", "Tornado") ~ "Wind",
+    EVENT_TYPE %in% c("Blizzard", "Heavy Snow", "Ice Storm", "Lake-Effect Snow", "Winter Storm", "Winter Weather", "Sleet", "Freezing Fog") ~ "Winter Weather",
+    TRUE ~ "Other"))  # Other unclassified events
+
+# Assign each category a color
+colors <- c("Extreme Temperature" = "red", 
+            "Flood" = "blue", 
+            "Wind" = "green", 
+            "Winter Weather" = "cyan", 
+            "Other" = "grey")
+leaflet_data$Color <- sapply(leaflet_data$EVENT_TYPE2, function(type) colors[type])
+
+# Plot the map with the color fill
+leaflet(leaflet_data) %>%
+  addTiles() %>%
+  addCircleMarkers(lng = ~BEGIN_LON, lat = ~BEGIN_LAT,
+    color = ~Color,  # Use the color column
+    popup = ~paste(
+      "Begin Date: ", BEGIN_DATE_TIME,
+      "<br>End Date: ", END_DATE_TIME,
+      "<br>Episode ID: ", EPISODE_ID,
+      "<br>Event ID: ", EVENT_ID,
+      "<br>Event Type: ", EVENT_TYPE,
+      "<br>Total Deaths: ", Total_Deaths,
+      "<br>Total Injuries: ", Total_Injuries),
+    radius = 6, fillOpacity = 0.8) %>%
+  setView(lng = -98.5795, lat = 39.8283, zoom = 4) %>%
+  addLegend(position = "bottomright", colors = colors, labels = names(colors), title = "Event Type")
+```
+
+Task 2c) Cluster
+```{r}
+# Add cluster code to the map
+leaflet(data = leaflet_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~BEGIN_LON, lat = ~BEGIN_LAT,
+    popup = ~paste(
+      "Begin Date: ", BEGIN_DATE_TIME,
+      "<br>End Date: ", END_DATE_TIME,
+      "<br>Episode ID: ", EPISODE_ID,
+      "<br>Event ID: ", EVENT_ID,
+      "<br>Event Type: ", EVENT_TYPE,
+      "<br>Total Deaths: ", Total_Deaths,
+      "<br>Total Injuries: ", Total_Injuries),  
+    clusterOptions = markerClusterOptions(),
+    group = 'markers') %>%
+  addProviderTiles(providers$Esri.WorldImagery) %>%
+  setView(lng = -98.5795, lat = 39.8283, zoom = 4) 
+```
+
+
+
+
+
+
+
+
+
+
