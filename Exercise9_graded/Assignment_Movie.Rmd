@@ -1,0 +1,196 @@
+---
+title: "Assignment3"
+author: "Yunhong Feng"
+date: '2024-03-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Load packages and data files 
+metadata<- read.csv("metadata.csv")
+tagged<- read.csv("tagged.csv")
+dialogue<- read.csv("dialogue.csv")
+url <- "https://www.cs.cmu.edu/~biglou/resources/bad-words.txt"
+profanities<- readLines(url, warn = FALSE)
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(wordcloud)
+library(tm)
+library(tidytext)
+library(stringr)
+library(quanteda)
+library(quanteda.textstats)
+```
+
+Question 1a:
+```{r}
+# To better filter out some core thematic elements, I manually created a list to filter out some unwanted elements
+additional_common_words <- c("time", "day", "yeah", "okay", "well", "gonna", "night", "hey", "people", "fine", "guys",  "yeah", "okay", "well", "oh", "right", "like", "just", "know", "got", "gonna", "want", "think", "really", "see", "thing", "things", "man", "good", "look", "looking", "sure", "yes", "no", "hey", "hi", "hello", "bye", 
+"maybe", "tell", "telling", "told", "talk", "ask", "asking", "asked", "go", "going", "come", "coming", "need", "needs", "needed", "take", "taking", "took", "told", "get", "getting", "let")
+
+# Transform the dialogue into a tidy data frame, remove different unwanted elements step by step
+tidy_dialogue <- dialogue %>%
+  unnest_tokens(word, Dialogue) %>%
+  mutate(word = str_to_lower(word)) %>% # Lower case
+  filter(!word %in% stop_words$word) %>% # Filters out the standard stop words
+  filter(!str_detect(word, "^[0-9]+$")) %>% # Remove number 
+  filter(!str_detect(word, "'s")) %>%  # Remove 's 
+  filter(!str_detect(word, "\\d"))%>% 
+  filter(!str_detect(word, "_|\\s|\\bah{1,3}\\b|à")) %>%
+  filter(!word %in% additional_common_words) # Filters out my own stop words
+
+# Now for tidy dialogue, calculate and Visualize the 20 most frequently used words in the dialogues
+tidy_dialogue %>%
+  count(word, sort = TRUE) %>% top_n(20) %>%
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_col() + coord_flip() +
+  labs(x = "Word", y = "Frequency", title = "Top 20 Most Frequent Words in Movie Dialogues")
+```
+Question 1b: 
+```{r}
+# I am interested in Science friction movie, so first find out what are movies categorized as SF
+SF_movies <- metadata %>% filter(str_detect(genres, "Science Fiction")) %>% select(name) %>% print()
+
+# Select any movie from the list (I chose Tenet), and find out the words in its script
+movie_words <- tidy_dialogue %>% filter(movie_id == "Tenet") %>% count(word, sort = TRUE)
+
+# Plot the word cloud
+wordcloud(words = movie_words$word, freq = movie_words$n, min.freq = 5, 
+          max.words = 200, random.order = FALSE, rot.per = 0.35,
+          colors = brewer.pal(8, "Dark2"), scale = c(3, 0.5)) # The parameter is set to make the most relevant words shown on the word cloud. 
+```
+Question 1c: 
+```{r}
+# I personally would categorize movie below 4 and above 8 as unsuccessful and successful.
+metadata <- metadata %>% mutate(success = case_when(
+    vote_average < 4 ~ "Unsuccessful", vote_average > 8 ~ "Successful", TRUE ~ "Neutral"))
+tidy_dialogue_q3 <- tidy_dialogue %>% mutate(file_name = movie_id) %>%
+  left_join(metadata %>% select(file_name, success), by = "file_name")
+
+# Ignore the neutral and count the words 
+SU_UN_freqWord <- tidy_dialogue_q3 %>%
+  filter(success %in% c("Successful", "Unsuccessful")) %>%
+  count(word, success, sort = TRUE)
+
+SU_UN_topWords <- SU_UN_freqWord %>% group_by(success) %>%
+  top_n(n = 10, wt = n) %>% ungroup()
+SU_UN_topWords$word <- with(SU_UN_topWords, reorder(word, n * ifelse(success == "Successful", 1, -1)))
+
+# By showing the max number, it gives me a clue of the break value that will be used in visualization
+max_n <- max(abs(SU_UN_topWords$n))
+breaks_value <- pretty(c(-100, 500), n = 3)
+
+# Plot the graph
+ggplot(SU_UN_topWords, aes(x = word, y = n * ifelse(success == "Successful", 1, -1), fill = success)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_y_continuous(labels = abs, breaks = breaks_value) +  # Adjusted breaks
+  labs(x = "Word", y = "Frequency", title = "Top Words in Successful vs. Unsuccessful Movies") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Successful" = "blue", "Unsuccessful" = "red")) +
+  guides(fill = guide_legend(title = "Movie Success"))
+```
+Question 1d: 
+```{r}
+# Merge the profanity list with the scripts data to find out profanity scores 
+profanity_scores <- tidy_dialogue %>% filter(word %in% profanities) %>% count(movie_id) %>%
+  rename(profanity_count = n)  %>% rename(file_name = movie_id)
+
+# Get the top 20 movies and visualize them 
+metadata_q4 <- metadata %>% inner_join(profanity_scores, by = "file_name")
+top_profanity_movies <- metadata_q4 %>% arrange(desc(profanity_count)) %>% top_n(10)
+
+ggplot(top_profanity_movies, aes(x = reorder(name, profanity_count), y = profanity_count, fill = profanity_count)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Top 10 Movies with Most Profanity", x = "Movie", y = "Profanity Count") +
+  theme_minimal()
+```
+```{r}
+# Only use Year info to investigate trend
+metadata_q4 <- metadata_q4 %>% mutate(year = lubridate::year(as.Date(release_date)))
+
+# Group by Year to sum the total number of profanity words used and show the trend 
+profanity_over_time <- metadata_q4 %>%
+  group_by(year) %>%
+  summarize(total_profanity = sum(profanity_count, na.rm = TRUE))
+ggplot(profanity_over_time, aes(x = year, y = total_profanity)) +
+  geom_line() + geom_point() +
+  labs(title = "Profanity Use Over Time in Movies", x = "Year", y = "Total Profanity Count") +
+  theme_minimal()
+```
+Question 1e: 
+```{r}
+# To calculate readability, the scripts have to be in plain text format
+scripts <- dialogue %>%
+  group_by(movie_id) %>%
+  summarize(script = paste(Dialogue, collapse = " ")) %>% rename(file_name = movie_id)
+
+# Calculate readability scores and run the correlation test 
+scripts$Flesch_Kincaid_Grade <- textstat_readability(scripts$script, measure = "Flesch.Kincaid")$Flesch.Kincaid
+scripts_with_votes <- merge(scripts, metadata, by = "file_name") %>% select(name, Flesch_Kincaid_Grade, vote_average)
+
+cor.test(scripts_with_votes$Flesch_Kincaid_Grade, scripts_with_votes$vote_average, use = "complete.obs")
+
+# Plot the relationship between readability and vote score average 
+ggplot(scripts_with_votes, aes(x = Flesch_Kincaid_Grade, y = vote_average)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "blue") +
+  labs(title = "Relationship Between Flesch-Kincaid Grade Level and IMDb Vote Average",
+       x = "Flesch-Kincaid Grade Level", y = "IMDb Vote Average")
+```
+The regression shows there is no significant correlation between readability and voting score. 
+
+Question 2a:
+```{r}
+# Separate the original multiple genres columns into one single genre only column 
+dialogue_genres_q2a <- tidy_dialogue %>% rename(file_name = movie_id) %>% left_join(metadata %>% select(name, file_name, genres), by = "file_name") %>% separate_rows(genres, sep = ",\\s*") %>% filter(genres %in% c("Action", "Adventure", "Animation"))
+
+# Count the number and form the TF-IDF table 
+word_in_genres <- dialogue_genres_q2a %>% count(genres, word, name) %>% ungroup()
+
+TFIDF_scores <- word_in_genres %>% bind_tf_idf(word, genres, n)
+top_TFIDF <- TFIDF_scores %>% group_by(genres) %>%
+  top_n(10, tf_idf) %>% ungroup()
+
+# Plot the table in bar chart
+ggplot(top_TFIDF, aes(x = word, y = tf_idf, fill = genres)) +
+  geom_col(position = position_dodge(width = 0.9), show.legend = TRUE) +
+  coord_flip() +
+  labs(x = "Word", y = "TF-IDF Score", title = "Defining Words Across Action, Adventure, and Animation Genres") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.title = element_blank()) +
+  scale_fill_brewer(palette = "Set1") 
+```
+Question 2b:
+```{r}
+# Inner join the nrc words to get emotion information of each words 
+nrc_word <- get_sentiments("nrc")
+dialogue_genres_q2b <- tidy_dialogue %>% rename(file_name = movie_id) %>% left_join(metadata %>% select(name, file_name, genres), by = "file_name") %>% separate_rows(genres, sep = ",\\s*") %>% inner_join(nrc_word, by = "word")
+
+# Count the number of emotion words under different genres
+emotionW_genre <- dialogue_genres_q2b %>%
+  count(genres, sentiment, name = "emotion_count") %>%
+  spread(key = sentiment, value = emotion_count, fill = 0) %>%
+  gather(key = "sentiment", value = "count", -genres) %>% na.omit()
+
+# Plot the bar chart
+ggplot(emotionW_genre, aes(x = genres, y = count, fill = sentiment)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Emotion Distribution Across Movie Genres", x = "Genre", y = "Count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        legend.title = element_blank(),
+        legend.position = "bottom")
+```
+
+
