@@ -1,0 +1,137 @@
+---
+title: "Assignment 4"
+author: "Yunhong Feng"
+date: '2024-04-07'
+output: html_notebook
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+audio<-read.csv("audio_features.csv")
+Billboard<-read.csv("billboard.csv")
+```
+
+```{r}
+library(shiny)
+library(dplyr)
+library(lubridate)
+library(DT)
+library(ggplot2)
+library(plotly)
+```
+
+Question 1: 
+```{r}
+Billboard <- Billboard %>% mutate(year = year(mdy(week_id)))
+
+# UI definition
+ui1 <- fluidPage(
+  titlePanel("Billboard Top Songs Analysis"),
+  sidebarLayout(sidebarPanel(sliderInput("yearRange", "Year Range:",   # Slider input for selecting the year range
+                  min = min(Billboard$year),
+                  max = max(Billboard$year),
+                  value = c(min(Billboard$year), max(Billboard$year)),
+                  step = 1)),
+    mainPanel(DTOutput("topSongs"))))
+
+# Server logic
+server1 <- function(input, output) {
+  output$topSongs <- renderDT({
+    # Filter and summarize data based on selected years
+    filtered_data <- Billboard %>%
+      filter(year >= input$yearRange[1], year <= input$yearRange[2]) %>%
+      group_by(song, performer) %>%
+      summarise(peak_position = min(peak_position), # Assuming lower number is better
+                total_weeks = max(weeks_on_chart),
+                .groups = 'drop') %>%
+      arrange(desc(total_weeks)) %>%
+      slice_max(order_by = total_weeks, n = 20) %>%
+      select(song, performer, peak_position, total_weeks)
+    
+    # Return an interactive DataTable
+    datatable(filtered_data, options = list(pageLength = 20, scrollX = TRUE, searching = FALSE))
+  })}
+
+# Run the app
+shinyApp(ui = ui1, server = server1)
+```
+
+Question 2:
+```{r}
+performers_list <- unique(Billboard$performer)
+
+ui2 <- fluidPage(
+  titlePanel("Billboard Rankings of Artist's Songs Over Time"),
+  sidebarLayout(sidebarPanel(selectInput("artistName", "Select an Artist:", choices = performers_list)),
+    mainPanel(plotlyOutput("rankingPlot"))))
+
+server2 <- function(input, output) {
+  output$rankingPlot <- renderPlotly({
+    # Filter data for the selected artist
+    artist_data <- Billboard %>%
+      filter(performer == input$artistName) %>%
+      arrange(year, peak_position) %>%
+      group_by(song) %>%
+      summarise(peak_position = min(peak_position), #Base on the best peak position
+                year = first(year),
+                .groups = 'drop') %>% arrange(year, peak_position)
+    
+    # Create the plot
+    p <- ggplot(artist_data, aes(x = year, y = peak_position, group = song, color = song)) +
+      geom_line() +
+      geom_point() +
+      scale_y_reverse(limits = c(100, 1)) + # Reverse the scale because in Billboard, 1 is the top
+      scale_x_continuous(breaks = pretty(artist_data$year, n = length(unique(artist_data$year)))) +
+      labs(title = paste("Billboard Rankings Over Time for", input$artistName),
+           x = "Year",
+           y = "Peak Position") +
+      theme_minimal() +
+      theme(legend.position = "none") # Remove the legend to avoid clutter
+    ggplotly(p)})}
+
+
+shinyApp(ui = ui2, server = server2)
+```
+
+Question 3:
+```{r}
+merged_data <- inner_join(Billboard, audio %>% select(song_id, spotify_genre, danceability, energy), by = "song_id") %>% mutate(spotify_genre = gsub("\\['|'\\]", "", spotify_genre), spotify_genre = gsub("'", "", spotify_genre))
+unique_genres <- unique(unlist(strsplit(unique(merged_data$spotify_genre), ",")))
+
+ui3 <- fluidPage(
+  titlePanel("Explore Song Characteristics"),
+  sidebarLayout(sidebarPanel(
+      selectInput("genre", "Select Genre(s):", choices = unique_genres, multiple = TRUE),
+      # Year range slider
+      sliderInput("yearRange", "Select Year Range:", min = min(merged_data$year), max = max(merged_data$year), value = c(min(merged_data$year), max(merged_data$year))),
+      # Artist drop down
+      selectInput("artist", "Select an Artist:", choices = c("All" = "All", unique(merged_data$performer))),
+      # Billboard chart position
+      radioButtons("chartPosition", "Billboard Chart Position:", choices = list("Top 1" = 1, "Top 10" = 10, "Top 20" = 20))),
+    mainPanel(plotlyOutput("scatterPlot"))))
+
+server3 <- function(input, output) {
+  output$scatterPlot <- renderPlotly({
+    # Filter data based on inputs
+    filtered_data <- merged_data %>%
+      filter((spotify_genre %in% input$genre | "All" %in% input$genre),
+             year >= input$yearRange[1] & year <= input$yearRange[2],
+             (performer == input$artist | input$artist == "All"),
+             peak_position <= input$chartPosition)
+    
+    # Create the plot
+    p <- ggplot(filtered_data, aes(x = danceability, y = energy, text = paste("Artist: ", performer, "<br>Song: ", song, "<br>Year: ", year, "<br>Peak Position: ", peak_position))) +
+      geom_point() +
+      labs(x = "Danceability", y = "Energy", title = "Song Characteristics by Danceability and Energy") +
+      theme_minimal()
+    
+    # Convert ggplot object to Plotly for interactivity
+    ggplotly(p, tooltip = "text")})}
+
+shinyApp(ui = ui3, server = server3)
+```
+
